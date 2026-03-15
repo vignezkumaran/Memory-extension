@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "AI Memory Extension",
+  "version": "0.1.0",
+  "description": "Shared memory across ChatGPT, Claude, and Perplexity.",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": [
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://www.perplexity.ai/*"
+  ],
+  "background": {
+    "service_worker": "src/background/index.js",
+    "type": "module"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com data:;"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_title": "AI Memory"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"],
+      "js": ["src/content/chatgpt/index.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["src/content/claude/index.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.perplexity.ai/*"],
+      "js": ["src/content/perplexity/index.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "ai-memory@example.com",
+      "strict_min_version": "120.0"
+    }
+  }
+}

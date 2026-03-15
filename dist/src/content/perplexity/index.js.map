@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["../../../../src/shared/logger.ts", "../../../../src/content/perplexity/index.ts"],
+  "sourcesContent": ["type LogLevel = 'debug' | 'info' | 'warn' | 'error';\n\n/**\n * Logs typed diagnostic context in a consistent format.\n */\nexport function logWithContext<TContext extends Record<string, unknown>>(\n  level: LogLevel,\n  message: string,\n  context?: TContext\n): void {\n  const payload = {\n    scope: 'ai-memory-extension',\n    timestamp: Date.now(),\n    message,\n    ...(context ?? {})\n  };\n\n  if (level === 'debug') {\n    console.debug(payload);\n    return;\n  }\n\n  if (level === 'info') {\n    console.info(payload);\n    return;\n  }\n\n  if (level === 'warn') {\n    console.warn(payload);\n    return;\n  }\n\n  console.error(payload);\n}\n", "import { logWithContext } from '../../shared/logger';\n\nlogWithContext('info', 'Perplexity content script initialized', { source: 'perplexity' });\n"],
+  "mappings": ";AAKO,SAAS,eACd,OACA,SACA,SACM;AACN,QAAM,UAAU;AAAA,IACd,OAAO;AAAA,IACP,WAAW,KAAK,IAAI;AAAA,IACpB;AAAA,IACA,GAAI,WAAW,CAAC;AAAA,EAClB;AAEA,MAAI,UAAU,SAAS;AACrB,YAAQ,MAAM,OAAO;AACrB;AAAA,EACF;AAEA,MAAI,UAAU,QAAQ;AACpB,YAAQ,KAAK,OAAO;AACpB;AAAA,EACF;AAEA,MAAI,UAAU,QAAQ;AACpB,YAAQ,KAAK,OAAO;AACpB;AAAA,EACF;AAEA,UAAQ,MAAM,OAAO;AACvB;;;AC/BA,eAAe,QAAQ,yCAAyC,EAAE,QAAQ,aAAa,CAAC;",
+  "names": []
+}

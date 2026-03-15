@@ -1,0 +1,25 @@
+{
+  "name": "ai-memory-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.background.json",
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs --watch"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.301",
+    "@types/firefox-webext-browser": "^120.0.4",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^4.4.1",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.1"
+  }
+}
