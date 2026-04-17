@@ -1,4 +1,4 @@
-export type ConversationSource = 'chatgpt' | 'claude' | 'perplexity';
+export type ConversationSource = 'chatgpt' | 'claude' | 'perplexity' | 'deepseek';
 
 /**
  * A single conversation message.
@@ -47,6 +47,7 @@ export interface InjectMessage {
   payload: {
     conversation: Conversation;
     format: 'full' | 'summary' | 'last-only';
+    preparedPrompt?: string;
   };
 }
 

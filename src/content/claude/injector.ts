@@ -13,8 +13,14 @@ function summarizeConversation(conversation: Conversation): string {
   return `Summary: ${userMessages} user messages, ${assistantMessages} assistant messages.\nPreview: ${preview}`;
 }
 
-function formatConversation(conversation: Conversation, format: InjectMessage['payload']['format']): string {
-  const header = `--- Previous conversation from ChatGPT ---\nTitle: ${conversation.title ?? 'Untitled'}\n`;
+function formatConversation(message: InjectMessage): string {
+  if (message.payload.preparedPrompt && message.payload.preparedPrompt.trim().length > 0) {
+    return message.payload.preparedPrompt;
+  }
+
+  const conversation = message.payload.conversation;
+  const format = message.payload.format;
+  const header = `--- Previous conversation from ${conversation.source.toUpperCase()} ---\nTitle: ${conversation.title ?? 'Untitled'}\n`;
 
   if (format === 'summary') {
     return `${header}${summarizeConversation(conversation)}`;
@@ -69,7 +75,7 @@ function renderStatus(message: string, success: boolean): void {
 export async function injectConversationToClaude(message: InjectMessage): Promise<StatusMessage> {
   try {
     const editor = await getEditorWithRetry();
-    const formatted = formatConversation(message.payload.conversation, message.payload.format);
+    const formatted = formatConversation(message);
     setEditorContent(editor, formatted);
 
     const status: StatusMessage = {

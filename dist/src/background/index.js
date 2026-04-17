@@ -84,7 +84,7 @@ function isConversation(value) {
     return false;
   }
   const candidate = value;
-  return typeof candidate.id === "string" && Array.isArray(candidate.messages) && candidate.messages.every(isMessage) && typeof candidate.createdAt === "number" && (candidate.source === "chatgpt" || candidate.source === "claude" || candidate.source === "perplexity");
+  return typeof candidate.id === "string" && Array.isArray(candidate.messages) && candidate.messages.every(isMessage) && typeof candidate.createdAt === "number" && (candidate.source === "chatgpt" || candidate.source === "claude" || candidate.source === "perplexity" || candidate.source === "deepseek");
 }
 
 // src/shared/logger.ts

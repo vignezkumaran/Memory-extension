@@ -21773,11 +21773,18 @@ var PopupErrorBoundary = class extends import_react2.Component {
   }
   render() {
     if (this.state.hasError) {
-      return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { padding: "12px" }, children: "Something went wrong in popup UI." });
+      return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { padding: "12px" }, children: "An unexpected error occurred in the extension popup." });
     }
     return this.props.children;
   }
 };
+function buildConversationSearchText(conversation) {
+  if (!conversation) {
+    return "";
+  }
+  const messageText = conversation.messages.map((message) => message.content).join(" ");
+  return `${conversation.title ?? ""} ${messageText}`.toLowerCase();
+}
 function toRelativeTime(epochMs) {
   const deltaMs = Date.now() - epochMs;
   const minutes = Math.floor(deltaMs / 6e4);
@@ -21794,36 +21801,147 @@ function toRelativeTime(epochMs) {
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
 }
+function normalizeText(input) {
+  return input.replace(/\s+/g, " ").trim();
+}
+function compactLine(input, maxLength = 180) {
+  const text = normalizeText(input);
+  if (!text) {
+    return "";
+  }
+  const shortened = text.slice(0, maxLength);
+  return shortened.length < text.length ? `${shortened.trimEnd()}...` : shortened;
+}
+function uniqueLines(lines, max = 4) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const line of lines) {
+    const compact = compactLine(line);
+    if (!compact) {
+      continue;
+    }
+    const key = compact.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(compact);
+    if (out.length >= max) {
+      break;
+    }
+  }
+  return out;
+}
+function buildContextPacket(conversation, style, objective, targetContext) {
+  const userHighlights = uniqueLines(
+    conversation.messages.filter((message) => message.role === "user").map((message) => message.content),
+    4
+  );
+  const assistantHighlights = uniqueLines(
+    conversation.messages.filter((message) => message.role === "assistant").map((message) => message.content),
+    4
+  );
+  const constraints = uniqueLines(
+    conversation.messages.map((message) => message.content).filter((content) => /\b(must|should|avoid|required|cannot|limit|deadline|budget)\b/i.test(content)),
+    3
+  );
+  const openQuestions = uniqueLines(
+    conversation.messages.map((message) => message.content).filter((content) => content.includes("?")),
+    3
+  );
+  const latestUser = [...conversation.messages].reverse().find((message) => message.role === "user");
+  const objectiveLine = normalizeText(objective) || "Continue from this context without repeating all prior chat history.";
+  const styleInstruction = style === "brief" ? "Reply in a compact answer only." : style === "actionable" ? "Reply with concrete, step-by-step actions and exact next outputs." : "Reply with short, structured sections.";
+  return [
+    `Context Packet (${conversation.source.toUpperCase()} -> ${getTabLabel(targetContext)})`,
+    `Title: ${conversation.title ?? "Untitled conversation"}`,
+    `Goal: ${objectiveLine}`,
+    "",
+    "User Intent:",
+    ...userHighlights.length > 0 ? userHighlights.map((line) => `- ${line}`) : ["- No clear user intent extracted."],
+    "",
+    "Useful Prior Outputs:",
+    ...assistantHighlights.length > 0 ? assistantHighlights.map((line) => `- ${line}`) : ["- No assistant highlights extracted."],
+    "",
+    "Constraints:",
+    ...constraints.length > 0 ? constraints.map((line) => `- ${line}`) : ["- No explicit constraints found."],
+    "",
+    "Open Questions:",
+    ...openQuestions.length > 0 ? openQuestions.map((line) => `- ${line}`) : ["- No open questions detected."],
+    "",
+    `Latest User Message: ${latestUser ? compactLine(latestUser.content, 220) : "Unavailable"}`,
+    "",
+    "Instruction For Target Model:",
+    styleInstruction,
+    "Use this packet as context, avoid replaying the full transcript, and continue from the latest goal."
+  ].join("\n");
+}
 function detectTabContext(url) {
   if (!url) {
     return "other";
   }
-  if (url.startsWith("https://chat.openai.com/") || url.startsWith("https://chatgpt.com/")) {
+  let hostname = "";
+  try {
+    hostname = new URL(url).hostname.toLowerCase();
+  } catch {
+    return "other";
+  }
+  if (hostname === "chatgpt.com" || hostname === "chat.openai.com") {
     return "chatgpt";
   }
-  if (url.startsWith("https://claude.ai/")) {
+  if (hostname === "claude.ai" || hostname.endsWith(".claude.ai")) {
     return "claude";
   }
-  if (url.startsWith("https://www.perplexity.ai/")) {
+  if (hostname === "perplexity.ai" || hostname.endsWith(".perplexity.ai")) {
     return "perplexity";
   }
+  if (hostname === "deepseek.com" || hostname.endsWith(".deepseek.com")) {
+    return "deepseek";
+  }
   return "other";
+}
+function isMissingReceiverError(error) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return message.includes("receiving end does not exist") || message.includes("could not establish connection");
+}
+function getTabLabel(context) {
+  if (context === "chatgpt") {
+    return "ChatGPT";
+  }
+  if (context === "claude") {
+    return "Claude";
+  }
+  if (context === "perplexity") {
+    return "Perplexity";
+  }
+  if (context === "deepseek") {
+    return "DeepSeek";
+  }
+  return "Unsupported Tab";
 }
 function App() {
   const [screen, setScreen] = (0, import_react2.useState)("loading");
   const [tabContext, setTabContext] = (0, import_react2.useState)("other");
   const [activeTabId, setActiveTabId] = (0, import_react2.useState)(null);
   const [memories, setMemories] = (0, import_react2.useState)([]);
+  const [conversationMap, setConversationMap] = (0, import_react2.useState)({});
   const [search, setSearch] = (0, import_react2.useState)("");
   const [deleteTargetId, setDeleteTargetId] = (0, import_react2.useState)(null);
+  const [expandedConversationId, setExpandedConversationId] = (0, import_react2.useState)(null);
   const [toast, setToast] = (0, import_react2.useState)(null);
   const [clearAllConfirm, setClearAllConfirm] = (0, import_react2.useState)(false);
   const [showInjectStatus, setShowInjectStatus] = (0, import_react2.useState)(true);
   const [groupBySource, setGroupBySource] = (0, import_react2.useState)(true);
   const [autoExpandPreview, setAutoExpandPreview] = (0, import_react2.useState)(true);
+  const [transferGoal, setTransferGoal] = (0, import_react2.useState)("");
+  const [transferStyle, setTransferStyle] = (0, import_react2.useState)("structured");
   const { listConversations, deleteConversation, getConversation, exportConversations } = useMessages();
-  const canInject = tabContext === "claude";
-  const injectDisabledReason = canInject ? void 0 : "Switch to Claude.ai to inject memories.";
+  const canInject = tabContext !== "other";
+  const canSave = tabContext !== "other";
+  const injectDisabledReason = canInject ? void 0 : "Open a supported AI chat tab to insert saved context.";
   (0, import_react2.useEffect)(() => {
     if (!toast) {
       return;
@@ -21864,9 +21982,13 @@ function App() {
       return memories;
     }
     return memories.filter((memory) => {
-      return memory.title.toLowerCase().includes(query) || memory.preview.toLowerCase().includes(query);
+      if (memory.title.toLowerCase().includes(query) || memory.preview.toLowerCase().includes(query)) {
+        return true;
+      }
+      const indexed = buildConversationSearchText(conversationMap[memory.id]);
+      return indexed.includes(query);
     });
-  }, [memories, search]);
+  }, [conversationMap, memories, search]);
   const grouped = (0, import_react2.useMemo)(() => {
     if (!groupBySource) {
       return { all: filtered };
@@ -21891,6 +22013,15 @@ function App() {
     const response = await listConversations();
     if (response.type === "LIST_RESULT") {
       setMemories(response.payload.conversations);
+      const exported = await exportConversations();
+      if (exported.type === "EXPORT_RESULT") {
+        const parsed = JSON.parse(exported.payload.json);
+        const map = {};
+        for (const conversation of parsed.conversations ?? []) {
+          map[conversation.id] = conversation;
+        }
+        setConversationMap(map);
+      }
       setScreen(response.payload.conversations.length > 0 ? "list" : "empty");
       return;
     }
@@ -21899,9 +22030,202 @@ function App() {
     }
     throw new Error("Unexpected response while listing conversations.");
   };
+  const saveConversationToBackground = async (conversation) => {
+    const response = await chrome.runtime.sendMessage({
+      type: "SAVE_CONVERSATION",
+      payload: { conversation }
+    });
+    return response?.type === "SAVE_RESULT";
+  };
+  const normalizeInjectionResult = (response) => {
+    if (!response || typeof response !== "object") {
+      return { success: false, error: "No injection response from content script." };
+    }
+    const typed = response;
+    if (typed.type === "INJECTION_STATUS") {
+      const statusError = typed.payload?.error;
+      return {
+        success: Boolean(typed.payload?.success),
+        ...statusError ? { error: statusError } : {}
+      };
+    }
+    const plainError = typed.error;
+    return {
+      success: Boolean(typed.success),
+      ...plainError ? { error: plainError } : {}
+    };
+  };
+  const getContentScriptFileForContext = (context) => {
+    if (context === "chatgpt") {
+      return "src/content/chatgpt/index.js";
+    }
+    if (context === "claude") {
+      return "src/content/claude/index.js";
+    }
+    if (context === "perplexity") {
+      return "src/content/perplexity/index.js";
+    }
+    if (context === "deepseek") {
+      return "src/content/deepseek/index.js";
+    }
+    return null;
+  };
+  const ensureContentScriptReady = async (tabId) => {
+    if (!chrome.scripting?.executeScript) {
+      return false;
+    }
+    const scriptFile = getContentScriptFileForContext(tabContext);
+    if (!scriptFile) {
+      return false;
+    }
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: [scriptFile]
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const injectConversationFallback = async (tabId, preparedPrompt) => {
+    if (!chrome.scripting?.executeScript) {
+      return { success: false, error: "Scripting API unavailable for fallback injection." };
+    }
+    const content = preparedPrompt;
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      args: [content],
+      func: (text) => {
+        const selectors = [
+          "textarea",
+          'div[contenteditable="true"][role="textbox"]',
+          '.ProseMirror[contenteditable="true"]',
+          '[contenteditable="true"]'
+        ];
+        let editor = null;
+        for (const selector of selectors) {
+          const candidate = document.querySelector(selector);
+          if (candidate) {
+            editor = candidate;
+            break;
+          }
+        }
+        if (!editor) {
+          return { success: false, error: "Chat editor not found for fallback injection." };
+        }
+        if (editor instanceof HTMLTextAreaElement) {
+          editor.focus();
+          const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
+          descriptor?.set?.call(editor, text);
+          editor.dispatchEvent(new Event("input", { bubbles: true }));
+          editor.dispatchEvent(new Event("change", { bubbles: true }));
+          return { success: true };
+        }
+        if (editor instanceof HTMLElement && editor.isContentEditable) {
+          editor.focus();
+          const selection = window.getSelection();
+          if (selection) {
+            const range = document.createRange();
+            range.selectNodeContents(editor);
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+          if (typeof document.execCommand === "function") {
+            document.execCommand("selectAll", false);
+            document.execCommand("delete", false);
+            document.execCommand("insertText", false, text);
+          } else {
+            editor.textContent = text;
+          }
+          editor.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText" }));
+          editor.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
+          editor.dispatchEvent(new Event("change", { bubbles: true }));
+          return { success: true };
+        }
+        return { success: false, error: "Editor exists but is not editable." };
+      }
+    });
+    return results[0]?.result ?? {
+      success: false,
+      error: "Fallback execution did not return a result."
+    };
+  };
+  const captureConversationFallback = async (tabId) => {
+    if (!chrome.scripting?.executeScript) {
+      return null;
+    }
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const host = window.location.hostname;
+        const source = host.includes("chatgpt.com") || host.includes("openai.com") ? "chatgpt" : host.includes("claude.ai") ? "claude" : host.includes("perplexity.ai") ? "perplexity" : host.includes("deepseek.com") ? "deepseek" : null;
+        if (!source) {
+          return null;
+        }
+        const selectors = [
+          "[data-message-author-role]",
+          '[data-role="user"]',
+          '[data-role="assistant"]',
+          '[data-testid*="message"]',
+          '[data-testid*="query"]',
+          '[data-testid*="answer"]',
+          '[class*="message"]',
+          '[class*="assistant"]',
+          '[class*="user"]',
+          "main article",
+          "article",
+          "main .prose",
+          "main .markdown",
+          "main .message"
+        ];
+        const nodes = Array.from(document.querySelectorAll(selectors.join(",")));
+        const seen = /* @__PURE__ */ new Set();
+        const messages = nodes.map((node) => {
+          const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+          if (!text) {
+            return null;
+          }
+          const explicitRole = node.getAttribute("data-message-author-role");
+          const dataRole = (node.getAttribute("data-role") ?? "").toLowerCase();
+          const testId = (node.getAttribute("data-testid") ?? "").toLowerCase();
+          const className = (node.getAttribute("class") ?? "").toLowerCase();
+          const hint = `${testId} ${className}`;
+          let role = "assistant";
+          if (explicitRole === "user" || explicitRole === "assistant" || explicitRole === "system") {
+            role = explicitRole;
+          } else if (dataRole === "user" || hint.includes("query") || hint.includes("prompt") || hint.includes("user")) {
+            role = "user";
+          } else if (dataRole === "assistant" || hint.includes("assistant") || hint.includes("answer") || hint.includes("response") || hint.includes("bot")) {
+            role = "assistant";
+          }
+          const fingerprint = `${role}:${text}`;
+          if (seen.has(fingerprint)) {
+            return null;
+          }
+          seen.add(fingerprint);
+          return { role, content: text };
+        }).filter((item) => item !== null).filter((item) => item.content.length > 8).slice(0, 160);
+        if (messages.length === 0) {
+          return null;
+        }
+        const firstUser = messages.find((message) => message.role === "user");
+        const first = firstUser?.content ?? messages[0]?.content ?? "AI Conversation";
+        return {
+          id: crypto.randomUUID(),
+          title: first.slice(0, 80),
+          messages,
+          createdAt: Date.now(),
+          source
+        };
+      }
+    });
+    const firstResult = results[0];
+    return firstResult?.result ?? null;
+  };
   const handleSaveConversation = async () => {
-    if (tabContext !== "chatgpt") {
-      showToast("error", "Save is only available on ChatGPT tabs.");
+    if (!canSave) {
+      showToast("error", "Save is only available on supported AI chat tabs.");
       return;
     }
     if (!activeTabId) {
@@ -21909,22 +22233,58 @@ function App() {
       return;
     }
     try {
-      const response = await chrome.tabs.sendMessage(activeTabId, {
-        type: "POPUP_SAVE_CHATGPT"
-      });
+      let response;
+      try {
+        response = await chrome.tabs.sendMessage(activeTabId, {
+          type: "POPUP_CAPTURE_CONTEXT"
+        });
+      } catch (sendError) {
+        if (!isMissingReceiverError(sendError)) {
+          throw sendError;
+        }
+        const injected = await ensureContentScriptReady(activeTabId);
+        if (!injected) {
+          throw sendError;
+        }
+        response = await chrome.tabs.sendMessage(activeTabId, {
+          type: "POPUP_CAPTURE_CONTEXT"
+        });
+      }
       if (!response?.success) {
-        showToast("error", response?.error ?? "Unable to save from this page.");
-        return;
+        const fallbackConversation = await captureConversationFallback(activeTabId);
+        if (!fallbackConversation) {
+          showToast("error", response?.error ?? "Unable to save from this page.");
+          return;
+        }
+        const saved = await saveConversationToBackground(fallbackConversation);
+        if (!saved) {
+          showToast("error", "Capture succeeded but save failed.");
+          return;
+        }
       }
       await refreshMemories();
+      setScreen("list");
       showToast("success", "Conversation saved successfully.");
     } catch (error) {
+      try {
+        const fallbackConversation = activeTabId ? await captureConversationFallback(activeTabId) : null;
+        if (fallbackConversation) {
+          const saved = await saveConversationToBackground(fallbackConversation);
+          if (saved) {
+            await refreshMemories();
+            setScreen("list");
+            showToast("success", "Conversation saved successfully.");
+            return;
+          }
+        }
+      } catch {
+      }
       showToast("error", error instanceof Error ? error.message : "Unable to save from this page.");
     }
   };
   const handleInject = async (memoryId) => {
     if (!canInject) {
-      showToast("error", "Inject is disabled on this tab.");
+      showToast("error", "Context insertion is unavailable on this tab.");
       return;
     }
     if (!activeTabId) {
@@ -21937,17 +22297,54 @@ function App() {
         showToast("error", convoResponse.type === "ERROR" ? convoResponse.payload.message : "Unable to fetch conversation.");
         return;
       }
+      const preparedPrompt = buildContextPacket(
+        convoResponse.payload.conversation,
+        transferStyle,
+        transferGoal,
+        tabContext
+      );
       const message = {
         type: "INJECT_CONVERSATION",
-        payload: { conversation: convoResponse.payload.conversation, format: "full" }
+        payload: { conversation: convoResponse.payload.conversation, format: "summary", preparedPrompt }
       };
-      await chrome.tabs.sendMessage(activeTabId, message);
+      let injectionResult;
+      try {
+        const primaryResponse = await chrome.tabs.sendMessage(activeTabId, message);
+        injectionResult = normalizeInjectionResult(primaryResponse);
+      } catch (primaryError) {
+        if (isMissingReceiverError(primaryError)) {
+          const injected = await ensureContentScriptReady(activeTabId);
+          if (injected) {
+            const retriedResponse = await chrome.tabs.sendMessage(activeTabId, message);
+            injectionResult = normalizeInjectionResult(retriedResponse);
+          } else {
+            const fallback = await injectConversationFallback(activeTabId, preparedPrompt);
+            if (!fallback.success) {
+              throw primaryError;
+            }
+            injectionResult = fallback;
+          }
+        } else {
+          const fallback = await injectConversationFallback(activeTabId, preparedPrompt);
+          if (!fallback.success) {
+            throw primaryError;
+          }
+          injectionResult = fallback;
+        }
+      }
+      if (!injectionResult.success) {
+        const fallback = await injectConversationFallback(activeTabId, preparedPrompt);
+        if (!fallback.success) {
+          showToast("error", injectionResult.error ?? fallback.error ?? "Injection failed.");
+          return;
+        }
+      }
     } catch (error) {
       showToast("error", error instanceof Error ? error.message : "Injection failed.");
       return;
     }
     if (showInjectStatus) {
-      showToast("success", "Memory injected into Claude.");
+      showToast("success", `Memory injected into ${getTabLabel(tabContext)}.`);
     }
   };
   const handleDeleteConfirmed = async () => {
@@ -21962,7 +22359,7 @@ function App() {
       }
       await refreshMemories();
       setDeleteTargetId(null);
-      showToast("success", "Memory deleted.");
+      showToast("success", "Conversation removed.");
     } catch (error) {
       showToast("error", error instanceof Error ? error.message : "Delete failed.");
     }
@@ -21980,7 +22377,7 @@ function App() {
     anchor.download = "ai-memory-export.json";
     anchor.click();
     URL.revokeObjectURL(url);
-    showToast("success", "Exported all memories as JSON.");
+    showToast("success", "Export completed successfully.");
   };
   if (screen === "loading") {
     return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-popup", children: [
@@ -22002,10 +22399,10 @@ function App() {
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("nav", { className: "ai-top-nav ai-frosted", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-header-left", children: [
         screen === "settings" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-icon-btn", type: "button", onClick: () => setScreen("list"), "aria-label": "Back", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "material-symbols-outlined", children: "arrow_back" }) }) : null,
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", { className: "ai-title", children: screen === "settings" ? "Settings" : "AI Memory" })
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", { className: "ai-title", children: screen === "settings" ? "Settings" : "Conversation Memory" })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-header-actions", children: [
-        screen !== "settings" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: `ai-status-pill ${canInject ? "is-active" : ""}`, children: canInject ? "Claude Active" : "Other Tab" }) : null,
+        screen !== "settings" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: `ai-status-pill ${canInject ? "is-active" : ""}`, children: getTabLabel(tabContext) }) : null,
         screen !== "settings" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-icon-btn", type: "button", onClick: () => setScreen("settings"), "aria-label": "Settings", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "material-symbols-outlined", children: "settings" }) }) : null
       ] })
     ] }),
@@ -22014,33 +22411,45 @@ function App() {
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("main", { className: "ai-main", children: [
       screen === "save" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "ai-empty", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "ai-illustration-box", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "material-symbols-outlined", children: "ink_highlighter" }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Save to Memory" }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: tabContext === "chatgpt" ? "You are on ChatGPT. Save this conversation into AI Memory." : "Open ChatGPT to save the current conversation." }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn", type: "button", disabled: tabContext !== "chatgpt", onClick: () => {
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Save Current Conversation" }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: canSave ? `You are on ${getTabLabel(tabContext)}. Save this conversation to local memory for reuse.` : "Open ChatGPT, Claude, Perplexity, or DeepSeek to save the active conversation." }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn", type: "button", disabled: !canSave, onClick: () => {
           void handleSaveConversation();
-        }, children: "Save This Conversation" }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-ghost", type: "button", onClick: () => setScreen(memories.length > 0 ? "list" : "empty"), children: "Go to Memory List" })
+        }, children: "Save Conversation" }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-ghost", type: "button", onClick: () => setScreen(memories.length > 0 ? "list" : "empty"), children: "Open Saved Conversations" })
       ] }) : null,
       screen === "list" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
         !canInject ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-banner", children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "material-symbols-outlined", children: "warning" }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Inject is disabled" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Context insertion unavailable" }),
             /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { children: injectDisabledReason })
           ] })
         ] }) : null,
-        toast ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: `ai-toast ${toast.kind === "error" ? "is-error" : ""}`, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "material-symbols-outlined", children: toast.kind === "error" ? "warning" : "check_circle" }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: toast.message }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "ai-icon-btn", onClick: () => setToast(null), "aria-label": "Dismiss toast", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "material-symbols-outlined", children: "close" }) })
-        ] }, toast.id) : null,
+        toast ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+          "div",
+          {
+            className: `ai-toast ${toast.kind === "error" ? "is-error" : ""}`,
+            role: toast.kind === "error" ? "alert" : "status",
+            "aria-live": toast.kind === "error" ? "assertive" : "polite",
+            "aria-atomic": "true",
+            children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "material-symbols-outlined", children: toast.kind === "error" ? "warning" : "check_circle" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: toast.message }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "ai-icon-btn", onClick: () => setToast(null), "aria-label": "Dismiss toast", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "material-symbols-outlined", children: "close" }) })
+            ]
+          },
+          toast.id
+        ) : null,
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "ai-search-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-search-row", children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
             "input",
             {
               className: "ai-input",
-              placeholder: "Search memories...",
+              placeholder: "Search saved conversations",
               value: search,
+              "aria-label": "Search saved conversations",
+              spellCheck: false,
               onChange: (event) => setSearch(event.target.value)
             }
           ),
@@ -22048,15 +22457,15 @@ function App() {
         ] }) }),
         search ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { className: "ai-item-meta", children: [
           filtered.length,
-          " results for \u201C",
+          ' results for "',
           search,
-          "\u201D"
+          '"'
         ] }) : null,
         filtered.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-no-results", children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
-            "No memories match \u201C",
+            'No saved conversations match "',
             search,
-            "\u201D"
+            '".'
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "ai-link", onClick: () => setSearch(""), children: "Clear search" })
         ] }) : Object.keys(grouped).sort((left, right) => left.localeCompare(right)).map((groupKey) => {
@@ -22071,7 +22480,7 @@ function App() {
             ] }),
             items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", { className: "ai-item", children: [
               /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-item-row-top", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: `ai-source-badge ${item.source === "chatgpt" ? "is-chatgpt" : "is-perplexity"}`, children: item.source === "chatgpt" ? "ChatGPT" : item.source === "perplexity" ? "Perplexity" : item.source }),
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: `ai-source-badge ${item.source === "chatgpt" ? "is-chatgpt" : "is-perplexity"}`, children: item.source === "chatgpt" ? "ChatGPT" : item.source === "perplexity" ? "Perplexity" : item.source === "deepseek" ? "DeepSeek" : "Claude" }),
                 /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "ai-item-meta", children: toRelativeTime(item.createdAt) }),
                 /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: "ai-item-meta", children: [
                   item.messageCount,
@@ -22090,47 +22499,66 @@ function App() {
                     onClick: () => {
                       void handleInject(item.id);
                     },
-                    children: "\u26A1 Inject"
+                    children: "Insert Context"
                   }
                 ),
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-delete", type: "button", onClick: () => setDeleteTargetId(item.id), children: "\u{1F5D1} Delete" })
-              ] })
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-delete", type: "button", onClick: () => setDeleteTargetId(item.id), children: "Remove" }),
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                  "button",
+                  {
+                    className: "ai-btn-ghost",
+                    type: "button",
+                    onClick: () => setExpandedConversationId((current) => current === item.id ? null : item.id),
+                    children: expandedConversationId === item.id ? "Hide Details" : "View Details"
+                  }
+                )
+              ] }),
+              expandedConversationId === item.id && conversationMap[item.id] ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "ai-full-transcript", children: (conversationMap[item.id]?.messages ?? []).map((message, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("strong", { children: [
+                  message.role.toUpperCase(),
+                  ":"
+                ] }),
+                " ",
+                message.content
+              ] }, `${item.id}-${index}`)) }) : null
             ] }, item.id))
           ] }, groupKey);
         })
       ] }) : null,
       screen === "empty" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "ai-empty", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "ai-illustration-box", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "material-symbols-outlined", children: "draw" }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "No memories yet." }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "Save a conversation from ChatGPT first, then use list + search here." }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn", type: "button", onClick: () => setScreen("save"), children: "Go to Save Page" })
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "No saved conversations yet." }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "Save a conversation from a supported AI tab to start building your memory library." }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn", type: "button", onClick: () => setScreen("save"), children: "Save a Conversation" })
       ] }) : null,
       screen === "settings" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "ai-settings", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("article", { className: "ai-settings-card", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
           memories.length,
-          " saved memories \xB7 Stored locally \xB7 No cloud sync"
+          " saved conversations \xB7 Stored locally \xB7 Cloud sync not enabled"
         ] }) }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-toggle-row", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Auto-expand preview on hover" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Expand preview text" }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
             "button",
             {
               type: "button",
               className: `ai-toggle ${autoExpandPreview ? "is-on" : ""}`,
               onClick: () => setAutoExpandPreview((value) => !value),
-              "aria-label": "Toggle auto-expand preview"
+              "aria-label": "Toggle auto-expand preview",
+              "aria-pressed": autoExpandPreview
             }
           )
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-toggle-row", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Show inject status in popup" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Show insertion status" }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
             "button",
             {
               type: "button",
               className: `ai-toggle ${showInjectStatus ? "is-on" : ""}`,
               onClick: () => setShowInjectStatus((value) => !value),
-              "aria-label": "Toggle inject status"
+              "aria-label": "Toggle inject status",
+              "aria-pressed": showInjectStatus
             }
           )
         ] }),
@@ -22142,12 +22570,13 @@ function App() {
               type: "button",
               className: `ai-toggle ${groupBySource ? "is-on" : ""}`,
               onClick: () => setGroupBySource((value) => !value),
-              "aria-label": "Toggle source grouping"
+              "aria-label": "Toggle source grouping",
+              "aria-pressed": groupBySource
             }
           )
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-outline", type: "button", onClick: handleExportAll, children: "Export All as JSON" }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-outline is-danger", type: "button", onClick: () => setClearAllConfirm(true), children: "Clear All Memories" }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-outline", type: "button", onClick: handleExportAll, children: "Export Conversations (JSON)" }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-outline is-danger", type: "button", onClick: () => setClearAllConfirm(true), children: "Clear Conversation List" }),
         clearAllConfirm ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-inline-confirm", children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
             "button",
@@ -22157,7 +22586,7 @@ function App() {
               onClick: () => {
                 setMemories([]);
                 setClearAllConfirm(false);
-                showToast("success", "All memories cleared.");
+                showToast("success", "Conversation list cleared.");
               },
               children: "Confirm Clear"
             }
@@ -22165,30 +22594,40 @@ function App() {
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "ai-btn-ghost", onClick: () => setClearAllConfirm(false), children: "Cancel" })
         ] }) : null,
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-about", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "AI Memory v1.0.0" }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "Shared local memory layer for ChatGPT and Claude workflows." })
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Conversation Memory v1.0.0" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "Professional local memory workflow for modern AI assistant sessions." })
         ] })
       ] }) : null
     ] }),
     screen === "list" || screen === "empty" || screen === "save" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("footer", { className: "ai-sticky-footer", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-footer-row", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-ghost", type: "button", onClick: () => setScreen("save"), children: "Save Page" }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-ghost", type: "button", onClick: () => setScreen(memories.length > 0 ? "list" : "empty"), children: "Memory List" })
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-ghost", type: "button", onClick: () => setScreen("save"), children: "Save" }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-ghost", type: "button", onClick: () => setScreen(memories.length > 0 ? "list" : "empty"), children: "Library" })
     ] }) }) : null,
-    deleteTarget ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "ai-modal-backdrop", role: "dialog", "aria-modal": "true", "aria-label": "Delete memory confirmation", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-modal", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: "Delete this memory?" }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
-        "\u201C",
-        deleteTarget.title.slice(0, 28),
-        deleteTarget.title.length > 28 ? "\u2026" : "",
-        "\u201D will be permanently removed from local storage."
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-modal-actions", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-danger", type: "button", onClick: () => {
-          void handleDeleteConfirmed();
-        }, children: "Delete Permanently" }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-ghost", type: "button", onClick: () => setDeleteTargetId(null), children: "Cancel" })
-      ] })
-    ] }) }) : null
+    deleteTarget ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      "div",
+      {
+        className: "ai-modal-backdrop",
+        role: "dialog",
+        "aria-modal": "true",
+        "aria-labelledby": "delete-memory-title",
+        "aria-describedby": "delete-memory-description",
+        children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-modal", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { id: "delete-memory-title", children: "Remove this conversation?" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
+            '"',
+            deleteTarget.title.slice(0, 28),
+            deleteTarget.title.length > 28 ? "..." : "",
+            '" will be permanently removed from local storage.'
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ai-modal-actions", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-danger", type: "button", onClick: () => {
+              void handleDeleteConfirmed();
+            }, children: "Remove Permanently" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ai-btn-ghost", type: "button", onClick: () => setDeleteTargetId(null), children: "Cancel" })
+          ] })
+        ] })
+      }
+    ) : null
   ] });
 }
 var container = document.getElementById("root");

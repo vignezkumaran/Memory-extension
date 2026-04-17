@@ -2,13 +2,23 @@
   "manifest_version": 3,
   "name": "AI Memory Extension",
   "version": "0.1.0",
-  "description": "Shared memory across ChatGPT, Claude, and Perplexity.",
-  "permissions": ["storage", "activeTab", "scripting"],
+  "description": "Capture, clean, and infuse context across ChatGPT, Claude, Perplexity, and DeepSeek with local-first storage.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
   "host_permissions": [
     "https://chat.openai.com/*",
     "https://chatgpt.com/*",
     "https://claude.ai/*",
-    "https://www.perplexity.ai/*"
+    "https://perplexity.ai/*",
+    "https://www.perplexity.ai/*",
+    "https://*.perplexity.ai/*",
+    "https://deepseek.com/*",
+    "https://www.deepseek.com/*",
+    "https://chat.deepseek.com/*",
+    "https://*.deepseek.com/*"
   ],
   "background": {
     "service_worker": "src/background/index.js",
@@ -19,22 +29,49 @@
   },
   "action": {
     "default_popup": "src/popup/popup.html",
-    "default_title": "AI Memory"
+    "default_title": "Memory Infuser"
   },
   "content_scripts": [
     {
-      "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"],
-      "js": ["src/content/chatgpt/index.js"],
+      "matches": [
+        "https://chat.openai.com/*",
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "src/content/chatgpt/index.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://claude.ai/*"],
-      "js": ["src/content/claude/index.js"],
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "src/content/claude/index.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.perplexity.ai/*"],
-      "js": ["src/content/perplexity/index.js"],
+      "matches": [
+        "https://perplexity.ai/*",
+        "https://www.perplexity.ai/*",
+        "https://*.perplexity.ai/*"
+      ],
+      "js": [
+        "src/content/perplexity/index.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://deepseek.com/*",
+        "https://www.deepseek.com/*",
+        "https://chat.deepseek.com/*",
+        "https://*.deepseek.com/*"
+      ],
+      "js": [
+        "src/content/deepseek/index.js"
+      ],
       "run_at": "document_idle"
     }
   ],

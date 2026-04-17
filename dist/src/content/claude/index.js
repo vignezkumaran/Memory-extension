@@ -60,7 +60,20 @@ function findClaudeEditor() {
 }
 function setEditorContent(editor, value) {
   editor.focus();
-  editor.textContent = value;
+  const selection = window.getSelection();
+  if (selection) {
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  if (typeof document.execCommand === "function") {
+    document.execCommand("selectAll", false);
+    document.execCommand("delete", false);
+    document.execCommand("insertText", false, value);
+  } else {
+    editor.textContent = value;
+  }
   editor.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText" }));
   editor.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: value }));
   editor.dispatchEvent(new Event("change", { bubbles: true }));
@@ -89,15 +102,20 @@ function summarizeConversation(conversation) {
   return `Summary: ${userMessages} user messages, ${assistantMessages} assistant messages.
 Preview: ${preview}`;
 }
-function formatConversation(conversation, format) {
-  const header = `--- Previous conversation from ChatGPT ---
+function formatConversation(message) {
+  if (message.payload.preparedPrompt && message.payload.preparedPrompt.trim().length > 0) {
+    return message.payload.preparedPrompt;
+  }
+  const conversation = message.payload.conversation;
+  const format = message.payload.format;
+  const header = `--- Previous conversation from ${conversation.source.toUpperCase()} ---
 Title: ${conversation.title ?? "Untitled"}
 `;
   if (format === "summary") {
     return `${header}${summarizeConversation(conversation)}`;
   }
   const bodyMessages = format === "last-only" ? conversation.messages.slice(-1) : conversation.messages;
-  const body = bodyMessages.map((message) => `${message.role.toUpperCase()}: ${message.content}`).join("\n\n");
+  const body = bodyMessages.map((message2) => `${message2.role.toUpperCase()}: ${message2.content}`).join("\n\n");
   return `${header}${body}`;
 }
 function ensureStatusElement() {
@@ -131,7 +149,7 @@ function renderStatus(message, success) {
 async function injectConversationToClaude(message) {
   try {
     const editor = await getEditorWithRetry();
-    const formatted = formatConversation(message.payload.conversation, message.payload.format);
+    const formatted = formatConversation(message);
     setEditorContent(editor, formatted);
     const status = {
       type: "INJECTION_STATUS",
@@ -158,6 +176,61 @@ async function injectConversationToClaude(message) {
 
 // src/content/claude/index.ts
 var teardownCallbacks = [];
+function isPopupCaptureRequestMessage(value) {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  return value.type === "POPUP_CAPTURE_CONTEXT";
+}
+function inferClaudeRole(text) {
+  const lower = text.toLowerCase();
+  if (lower.startsWith("you") || lower.startsWith("human") || lower.startsWith("user")) {
+    return "user";
+  }
+  if (lower.startsWith("system")) {
+    return "system";
+  }
+  return "assistant";
+}
+function extractClaudeConversation() {
+  const containers = Array.from(document.querySelectorAll("main [data-testid], main article, main .prose"));
+  const messages = [];
+  for (const container of containers) {
+    const text = container.textContent?.trim();
+    if (!text || text.length < 6) {
+      continue;
+    }
+    const role = inferClaudeRole(text);
+    messages.push({ role, content: text });
+  }
+  if (messages.length === 0) {
+    return null;
+  }
+  return {
+    id: crypto.randomUUID(),
+    title: messages[0]?.content.slice(0, 80) ?? "Claude Conversation",
+    messages,
+    createdAt: Date.now(),
+    source: "claude"
+  };
+}
+function saveClaudeConversationToBackground(conversation) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: "SAVE_CONVERSATION", payload: { conversation } }, (response) => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        reject(new Error(runtimeError.message));
+        return;
+      }
+      const type = response?.type;
+      if (type !== "SAVE_RESULT") {
+        reject(new Error("Unable to save Claude conversation."));
+        return;
+      }
+      resolve();
+    });
+  });
+}
 function isInjectMessage(value) {
   if (!value || typeof value !== "object") {
     return false;
@@ -168,6 +241,15 @@ function isInjectMessage(value) {
 var listener = (message, _sender, sendResponse) => {
   void (async () => {
     try {
+      if (isPopupCaptureRequestMessage(message)) {
+        const conversation = extractClaudeConversation();
+        if (!conversation) {
+          throw new MessageValidationError("No Claude conversation found to capture.");
+        }
+        await saveClaudeConversationToBackground(conversation);
+        sendResponse({ success: true });
+        return;
+      }
       if (!isInjectMessage(message)) {
         throw new MessageValidationError("Received unsupported message in Claude content script.");
       }
@@ -190,6 +272,9 @@ var listener = (message, _sender, sendResponse) => {
 };
 chrome.runtime.onMessage.addListener(listener);
 teardownCallbacks.push(() => chrome.runtime.onMessage.removeListener(listener));
+if (!findClaudeEditor()) {
+  logWithContext("warn", "Claude editor not found during initialization; retrying via runtime calls.");
+}
 window.addEventListener("beforeunload", () => {
   teardownCallbacks.forEach((cleanup) => cleanup());
   teardownCallbacks.length = 0;

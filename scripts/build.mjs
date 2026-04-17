@@ -13,6 +13,7 @@ const buildOptions = {
     'src/content/chatgpt/index.ts',
     'src/content/claude/index.ts',
     'src/content/perplexity/index.ts',
+    'src/content/deepseek/index.ts',
     'src/popup/popup.tsx'
   ],
   outdir: 'dist/src',

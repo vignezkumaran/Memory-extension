@@ -24,6 +24,9 @@ export function isConversation(value: unknown): value is Conversation {
     Array.isArray(candidate.messages) &&
     candidate.messages.every(isMessage) &&
     typeof candidate.createdAt === 'number' &&
-    (candidate.source === 'chatgpt' || candidate.source === 'claude' || candidate.source === 'perplexity')
+    (candidate.source === 'chatgpt' ||
+      candidate.source === 'claude' ||
+      candidate.source === 'perplexity' ||
+      candidate.source === 'deepseek')
   );
 }

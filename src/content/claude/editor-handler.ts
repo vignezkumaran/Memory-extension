@@ -25,7 +25,23 @@ export function findClaudeEditor(): HTMLElement | null {
  */
 export function setEditorContent(editor: HTMLElement, value: string): void {
   editor.focus();
-  editor.textContent = value;
+
+  const selection = window.getSelection();
+  if (selection) {
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  if (typeof document.execCommand === 'function') {
+    document.execCommand('selectAll', false);
+    document.execCommand('delete', false);
+    document.execCommand('insertText', false, value);
+  } else {
+    editor.textContent = value;
+  }
+
   editor.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText' }));
   editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: value }));
   editor.dispatchEvent(new Event('change', { bubbles: true }));

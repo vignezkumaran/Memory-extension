@@ -1,6 +1,6 @@
 import { MessageValidationError } from '../../shared/errors';
 import { logWithContext } from '../../shared/logger';
-import type { BackgroundResponseMessage } from '../../shared/types';
+import type { BackgroundResponseMessage, InjectMessage } from '../../shared/types';
 import { extractChatGPTConversation } from './extractor';
 import { injectSaveButton } from './ui';
 
@@ -41,12 +41,12 @@ async function sendSaveRequest(conversationId: string, payload: unknown): Promis
   });
 }
 
-async function onSaveConversation(): Promise<void> {
+async function onSaveConversation(): Promise<boolean> {
   try {
     const conversation = await extractChatGPTConversation();
     if (!conversation) {
       logWithContext('warn', 'Skipping save because extraction returned null', { source: 'chatgpt' });
-      return;
+      return false;
     }
 
     const response = await sendSaveRequest(conversation.id, {
@@ -56,7 +56,7 @@ async function onSaveConversation(): Promise<void> {
 
     if (response.type === 'SAVE_RESULT') {
       logWithContext('info', 'Conversation saved successfully', { id: response.payload.id });
-      return;
+      return true;
     }
 
     if (response.type === 'ERROR') {
@@ -68,47 +68,114 @@ async function onSaveConversation(): Promise<void> {
     logWithContext('error', 'Failed to save ChatGPT conversation', {
       error: error instanceof Error ? error.message : String(error)
     });
+    return false;
   }
 }
 
-interface PopupSaveRequestMessage {
-  type: 'POPUP_SAVE_CHATGPT';
+interface PopupCaptureRequestMessage {
+  type: 'POPUP_CAPTURE_CONTEXT';
 }
 
-function isPopupSaveRequestMessage(value: unknown): value is PopupSaveRequestMessage {
+function isPopupCaptureRequestMessage(value: unknown): value is PopupCaptureRequestMessage {
   if (!value || typeof value !== 'object') {
     return false;
   }
 
-  return (value as { type?: string }).type === 'POPUP_SAVE_CHATGPT';
+  return (value as { type?: string }).type === 'POPUP_CAPTURE_CONTEXT';
 }
 
-const popupListener: Parameters<typeof chrome.runtime.onMessage.addListener>[0] = (message, _sender, sendResponse) => {
-  if (!isPopupSaveRequestMessage(message)) {
+function isInjectMessage(value: unknown): value is InjectMessage {
+  if (!value || typeof value !== 'object') {
     return false;
   }
 
-  void (async () => {
-    try {
-      await onSaveConversation();
-      sendResponse({ success: true });
-    } catch (error) {
-      sendResponse({
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  })();
+  const candidate = value as Partial<InjectMessage>;
+  return candidate.type === 'INJECT_CONVERSATION' && !!candidate.payload?.conversation;
+}
 
-  return true;
+function findChatGPTEditor(): HTMLTextAreaElement | HTMLDivElement | null {
+  const textArea = document.querySelector('textarea');
+  if (textArea instanceof HTMLTextAreaElement) {
+    return textArea;
+  }
+
+  const editable = document.querySelector('[contenteditable="true"]');
+  if (editable instanceof HTMLDivElement) {
+    return editable;
+  }
+
+  return null;
+}
+
+function formatInjectContent(message: InjectMessage): string {
+  if (message.payload.preparedPrompt && message.payload.preparedPrompt.trim().length > 0) {
+    return message.payload.preparedPrompt;
+  }
+
+  const prefix = `--- Previous conversation from ${message.payload.conversation.source.toUpperCase()} ---\n`;
+  const body = message.payload.conversation.messages
+    .map((item) => `${item.role.toUpperCase()}: ${item.content}`)
+    .join('\n\n');
+
+  return `${prefix}${body}`;
+}
+
+function injectIntoChatGPT(message: InjectMessage): { success: boolean; error?: string } {
+  const editor = findChatGPTEditor();
+  if (!editor) {
+    return { success: false, error: 'ChatGPT input editor not found.' };
+  }
+
+  const content = formatInjectContent(message);
+  if (editor instanceof HTMLTextAreaElement) {
+    editor.focus();
+    editor.value = content;
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    editor.dispatchEvent(new Event('change', { bubbles: true }));
+    return { success: true };
+  }
+
+  editor.focus();
+  editor.textContent = content;
+  editor.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: content }));
+  editor.dispatchEvent(new Event('change', { bubbles: true }));
+  return { success: true };
+}
+
+const popupListener: Parameters<typeof chrome.runtime.onMessage.addListener>[0] = (message, _sender, sendResponse) => {
+  if (isPopupCaptureRequestMessage(message)) {
+    void (async () => {
+      try {
+        const success = await onSaveConversation();
+        sendResponse({
+          success,
+          error: success ? undefined : 'Unable to capture conversation on this ChatGPT page.'
+        });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    })();
+
+    return true;
+  }
+
+  if (isInjectMessage(message)) {
+    sendResponse(injectIntoChatGPT(message));
+    return true;
+  }
+
+  return false;
 };
 
 chrome.runtime.onMessage.addListener(popupListener);
 
-const cleanup = injectSaveButton(onSaveConversation);
+const cleanup = injectSaveButton(async () => {
+  await onSaveConversation();
+});
 window.addEventListener('beforeunload', () => {
   cleanup();
   chrome.runtime.onMessage.removeListener(popupListener);
 });
-
-export { extractChatGPTConversation };
